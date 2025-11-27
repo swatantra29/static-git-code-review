@@ -1,7 +1,8 @@
 
 import React, { useState, useEffect } from 'react';
 import ReactMarkdown from 'react-markdown';
-import { Search, Github, GitBranch, GitCommit, GitPullRequest, Folder, File, ChevronRight, ChevronDown, Moon, Sun, BrainCircuit, Bot, Layout, FileSearch, Settings, Key, AlertCircle, LogOut, Users, Book, X, ExternalLink, Activity, Layers, ShieldCheck, Zap, RefreshCw, Trash2, Plus, Lock, Loader2 } from 'lucide-react';
+import { Search, Github, GitBranch, GitCommit, GitPullRequest, Folder, File, ChevronRight, ChevronDown, Moon, Sun, BrainCircuit, Bot, Layout, FileSearch, Settings, Key, AlertCircle, LogOut, Users, Book, X, ExternalLink, Activity, Layers, ShieldCheck, Zap, RefreshCw, Trash2, Plus, Lock, Loader2, History, Clock, ChevronLeft } from 'lucide-react';
+import { ReviewHistoryService, SavedReview } from '../services/reviewHistoryService';
 import { Button } from './Button';
 import { Sidebar } from './Sidebar';
 import { RepoInfo, Commit, FileNode, Branch, Contributor, PullRequest, ViewState, DetailView, AIAnalysisResult, ManagedKey, RepoEntry } from '../types';
@@ -159,6 +160,11 @@ export const Dashboard: React.FC<DashboardProps> = ({ onLogout }) => {
   const [usageMetadata, setUsageMetadata] = useState<{input: number, output: number, total: number} | null>(null);
   const [aiAnalysis, setAiAnalysis] = useState<AIAnalysisResult | null>(null);
 
+  // Review History States
+  const [showReviewHistory, setShowReviewHistory] = useState(false);
+  const [reviewHistory, setReviewHistory] = useState<SavedReview[]>([]);
+  const [loadedReviewId, setLoadedReviewId] = useState<string | null>(null);
+
   // Settings State
   const [managedKeys, setManagedKeys] = useState<ManagedKey[]>([]);
   const [newKeyName, setNewKeyName] = useState('');
@@ -198,6 +204,28 @@ export const Dashboard: React.FC<DashboardProps> = ({ onLogout }) => {
     };
     loadRepos();
   }, []);
+
+  // Load review history on mount and when showReviewHistory changes
+  useEffect(() => {
+    setReviewHistory(ReviewHistoryService.getAll());
+  }, [showReviewHistory]);
+
+  // Save review when AI analysis completes (when isReviewing goes from true to false and we have content)
+  const previousIsReviewing = React.useRef(isReviewing);
+  useEffect(() => {
+    if (previousIsReviewing.current && !isReviewing && reviewMarkdown && repoInfo && aiAnalysis && !loadedReviewId) {
+      // Analysis just completed, save the review
+      ReviewHistoryService.save(
+        repoInfo,
+        reviewMarkdown,
+        aiAnalysis,
+        commits.length,
+        pullRequests.length
+      );
+      setReviewHistory(ReviewHistoryService.getAll());
+    }
+    previousIsReviewing.current = isReviewing;
+  }, [isReviewing, reviewMarkdown, repoInfo, aiAnalysis, commits.length, pullRequests.length, loadedReviewId]);
 
   const toggleTheme = () => setTheme(prev => prev === 'dark' ? 'light' : 'dark');
 
@@ -277,11 +305,56 @@ export const Dashboard: React.FC<DashboardProps> = ({ onLogout }) => {
     setReviewMarkdown('');
     setUsageMetadata(null);
     setViewState(ViewState.IDLE);
+    setLoadedReviewId(null);
   }
+
+  // Load a saved review from history
+  const handleLoadReview = async (savedReview: SavedReview) => {
+    // Set loaded review ID to prevent re-saving
+    setLoadedReviewId(savedReview.id);
+    
+    // Restore the review data
+    setReviewMarkdown(savedReview.reviewMarkdown);
+    setAiAnalysis(savedReview.aiAnalysis);
+    setUsageMetadata(savedReview.aiAnalysis?.tokenUsage || null);
+    
+    // Fetch fresh metadata from GitHub API
+    const parsed = parseGithubUrl(savedReview.repoUrl);
+    if (parsed) {
+      setViewState(ViewState.LOADING_REPO);
+      setError(null);
+      try {
+        const data = await fetchRepoDetails(parsed.owner, parsed.repo);
+        setRepoInfo(data.info);
+        setCommits(data.commits);
+        setPullRequests(data.pullRequests);
+        setFiles(data.files);
+        setBranches(data.branches);
+        setContributors(data.contributors);
+        setReadme(data.readme);
+        setLanguages(data.languages);
+        setViewState(ViewState.REPO_LOADED);
+        setShowReviewHistory(false);
+        setIsSidebarOpen(true); // Open sidebar to show the review
+      } catch (err) {
+        setError(err instanceof Error ? err.message : 'Failed to fetch repository data');
+        setViewState(ViewState.IDLE);
+      }
+    }
+  };
+
+  // Delete a saved review
+  const handleDeleteReview = (id: string, e: React.MouseEvent) => {
+    e.stopPropagation();
+    ReviewHistoryService.delete(id);
+    setReviewHistory(ReviewHistoryService.getAll());
+  };
 
   const handleReview = async () => {
     if (!repoInfo) return;
     
+    // Clear loadedReviewId to allow saving this new review
+    setLoadedReviewId(null);
     setIsSidebarOpen(true);
     setReviewMarkdown('');
     setIsReviewing(true);
@@ -592,12 +665,124 @@ export const Dashboard: React.FC<DashboardProps> = ({ onLogout }) => {
         </div>
         
         <div className="flex items-center gap-4">
+          <button 
+            onClick={() => setShowReviewHistory(!showReviewHistory)} 
+            className={`p-2 rounded-lg transition-colors flex items-center gap-1.5 ${
+              showReviewHistory 
+                ? 'bg-[hsl(var(--primary))] text-white' 
+                : 'text-[hsl(var(--text-dim))] hover:bg-[hsl(var(--surface-1))]'
+            }`}
+            title="Review History"
+          >
+            <History size={18} />
+            {reviewHistory.length > 0 && (
+              <span className={`text-xs font-bold ${showReviewHistory ? 'text-white' : 'text-[hsl(var(--primary))]'}`}>
+                {reviewHistory.length}
+              </span>
+            )}
+          </button>
           <button onClick={() => setShowSettings(!showSettings)} className="p-2 rounded-lg text-[hsl(var(--text-dim))] hover:bg-[hsl(var(--surface-1))] transition-colors"><Settings size={18} /></button>
           <button onClick={toggleTheme} className="p-2 rounded-lg text-[hsl(var(--text-dim))] hover:bg-[hsl(var(--surface-1))] transition-colors">{theme === 'dark' ? <Sun size={18} /> : <Moon size={18} />}</button>
           <div className="h-4 w-px bg-[hsl(var(--surface-2))]" />
           <button onClick={onLogout} className="text-xs text-[hsl(var(--text-dim))] hover:text-red-400 flex items-center gap-1 transition-colors font-medium"><LogOut size={14} /> Sign Out</button>
         </div>
       </header>
+
+      {/* Review History Panel */}
+      <div 
+        className={`fixed inset-y-0 left-0 w-[350px] bg-[hsl(var(--surface-1))] shadow-[10px_0_30px_rgba(0,0,0,var(--shadow-strength))] transform transition-transform duration-300 ease-in-out z-40 flex flex-col border-r border-[hsl(var(--surface-2))] ${
+          showReviewHistory ? 'translate-x-0' : '-translate-x-full'
+        }`}
+      >
+        <div className="h-16 flex items-center justify-between px-4 border-b border-[hsl(var(--surface-2))] bg-[hsl(var(--surface-1))] shrink-0">
+          <h2 className="font-semibold text-lg text-[hsl(var(--text-main))] flex items-center gap-2">
+            <History size={20} className="text-[hsl(var(--primary))]" />
+            Review History
+          </h2>
+          <button 
+            onClick={() => setShowReviewHistory(false)}
+            className="p-2 text-[hsl(var(--text-dim))] hover:text-[hsl(var(--text-main))] transition-colors rounded-md hover:bg-[hsl(var(--surface-2))]"
+          >
+            <ChevronLeft size={20} />
+          </button>
+        </div>
+        
+        <div className="flex-1 overflow-y-auto p-4 space-y-3 custom-scrollbar">
+          {reviewHistory.length === 0 ? (
+            <div className="flex flex-col items-center justify-center h-[50vh] text-[hsl(var(--text-dim))] text-center">
+              <History size={48} strokeWidth={1} className="opacity-30 mb-4" />
+              <p className="text-sm">No saved reviews yet</p>
+              <p className="text-xs mt-1 opacity-70">Reviews will appear here after AI analysis</p>
+            </div>
+          ) : (
+            reviewHistory.map(review => (
+              <div 
+                key={review.id} 
+                onClick={() => handleLoadReview(review)}
+                className={`p-3 bg-[hsl(var(--bg))] border rounded-lg cursor-pointer transition-all hover:border-[hsl(var(--primary))] hover:shadow-md group ${
+                  loadedReviewId === review.id 
+                    ? 'border-[hsl(var(--primary))] ring-1 ring-[hsl(var(--primary))]' 
+                    : 'border-[hsl(var(--surface-2))]'
+                }`}
+              >
+                <div className="flex justify-between items-start mb-2">
+                  <div className="font-medium text-[hsl(var(--text-main))] text-sm truncate flex-1 mr-2">
+                    {review.repoFullName}
+                  </div>
+                  <button 
+                    onClick={(e) => handleDeleteReview(review.id, e)}
+                    className="p-1 text-[hsl(var(--text-dim))] hover:text-red-400 hover:bg-red-900/20 rounded opacity-0 group-hover:opacity-100 transition-all"
+                    title="Delete review"
+                  >
+                    <Trash2 size={14} />
+                  </button>
+                </div>
+                
+                <div className="flex items-center gap-2 text-xs text-[hsl(var(--text-dim))] mb-2">
+                  <Clock size={12} />
+                  <span>{new Date(review.savedAt).toLocaleDateString()} {new Date(review.savedAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</span>
+                </div>
+                
+                <div className="flex gap-3 text-xs">
+                  <span className="flex items-center gap-1 text-[hsl(var(--text-dim))]">
+                    <GitCommit size={12} /> {review.commitCount} commits
+                  </span>
+                  <span className="flex items-center gap-1 text-[hsl(var(--text-dim))]">
+                    <GitPullRequest size={12} /> {review.prCount} PRs
+                  </span>
+                </div>
+                
+                {review.aiAnalysis?.scores && (
+                  <div className="flex gap-2 mt-2 pt-2 border-t border-[hsl(var(--surface-2))]">
+                    <span className="text-[10px] px-1.5 py-0.5 rounded bg-[hsl(var(--surface-2))]">
+                      Quality: <span className="text-[hsl(var(--primary))] font-bold">{review.aiAnalysis.scores.quality}</span>
+                    </span>
+                    <span className="text-[10px] px-1.5 py-0.5 rounded bg-[hsl(var(--surface-2))]">
+                      Security: <span className="text-[hsl(var(--primary))] font-bold">{review.aiAnalysis.scores.security}</span>
+                    </span>
+                  </div>
+                )}
+              </div>
+            ))
+          )}
+        </div>
+        
+        {reviewHistory.length > 0 && (
+          <div className="p-4 border-t border-[hsl(var(--surface-2))] shrink-0">
+            <button 
+              onClick={() => {
+                if (confirm('Are you sure you want to clear all review history?')) {
+                  ReviewHistoryService.clearAll();
+                  setReviewHistory([]);
+                }
+              }}
+              className="w-full text-xs text-red-400 hover:text-red-300 hover:bg-red-900/20 p-2 rounded transition-colors flex items-center justify-center gap-1"
+            >
+              <Trash2 size={12} /> Clear All History
+            </button>
+          </div>
+        )}
+      </div>
 
       {/* Main Content */}
       <main className="flex-1 overflow-y-auto p-6 md:p-8 scroll-smooth">
